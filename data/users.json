@@ -1,0 +1,31 @@
+[
+  {
+    "id": "user_1792666232361_q3ks",
+    "username": "test_canbo",
+    "email": "canbo@example.com",
+    "password": "mypassword123",
+    "isProfileCompleted": false,
+    "profile": {
+      "displayName": "test_canbo",
+      "role": "Bí thư Chi đoàn",
+      "units": [
+        "Ban Thanh Niên",
+        "Chi hội 1"
+      ],
+      "birthDate": "1995-01-01",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=test_canbo",
+      "email": "canbo@example.com",
+      "phone": "",
+      "weeklyGoal": 3,
+      "notifications": {
+        "browserEnabled": true,
+        "soundEnabled": true,
+        "priorityReminders": true,
+        "overdueAlerts": true
+      },
+      "connectedAppsList": []
+    },
+    "createdAt": "2026-10-22T10:50:32.361Z",
+    "lastSyncedAt": "2026-10-22T10:50:50.297Z"
+  }
+]
