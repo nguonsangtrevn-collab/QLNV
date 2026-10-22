@@ -54,7 +54,7 @@ export async function exportTaskToDocx(task: Task, user?: UserProfile): Promise<
             new Paragraph({
               children: [
                 new TextRun({
-                  text: subtask.title,
+                  text: subtask.phase ? `[${subtask.phase}] ${subtask.title}` : subtask.title,
                   bold: subtask.completed,
                   size: 20,
                   strike: false,
@@ -314,6 +314,28 @@ export async function exportTaskToDocx(task: Task, user?: UserProfile): Promise<
               }),
             ],
           }),
+
+          ...(task.aiAnalysis
+            ? [
+                new Paragraph({
+                  spacing: { before: 60, after: 120 },
+                  children: [
+                    new TextRun({
+                      text: '• Phân tích & nghiên cứu chuyên sâu (AI): ',
+                      bold: true,
+                      size: 20,
+                      color: '4338CA',
+                    }),
+                    new TextRun({
+                      text: task.aiAnalysis,
+                      italics: true,
+                      size: 19,
+                      color: '334155',
+                    }),
+                  ],
+                }),
+              ]
+            : []),
 
           // Chi tiết các subtask
           new Paragraph({

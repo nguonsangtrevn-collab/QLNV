@@ -433,14 +433,27 @@ export const ActiveTaskList: React.FC<ActiveTaskListProps> = ({
                   </div>
 
                   {/* Task Title & Description with live search highlighting */}
-                  <div>
+                  <div className="space-y-2">
                     <h3 className="text-base sm:text-lg font-bold text-slate-900">
                       <HighlightMatch text={task.title} query={searchQuery} />
                     </h3>
                     {task.description && (
-                      <p className="text-xs sm:text-sm text-slate-600 mt-1 leading-relaxed">
+                      <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
                         <HighlightMatch text={task.description} query={searchQuery} />
                       </p>
+                    )}
+
+                    {/* AI Research Insight Callout if present */}
+                    {task.aiAnalysis && (
+                      <div className="p-3 rounded-2xl bg-gradient-to-r from-indigo-50/80 via-violet-50/50 to-blue-50/80 border border-indigo-200/70 text-xs text-indigo-950 space-y-1">
+                        <div className="flex items-center gap-1.5 font-bold text-indigo-900">
+                          <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                          <span>AI Nghiên cứu & Phân tích chuyên sâu:</span>
+                        </div>
+                        <p className="text-[12px] text-slate-700 leading-relaxed font-normal whitespace-pre-line">
+                          <HighlightMatch text={task.aiAnalysis} query={searchQuery} />
+                        </p>
+                      </div>
                     )}
                   </div>
 
@@ -511,14 +524,21 @@ export const ActiveTaskList: React.FC<ActiveTaskListProps> = ({
                                 className="mt-0.5 w-4 h-4 rounded-sm text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                               />
                               <div className="flex-1 min-w-0">
-                                <label
-                                  htmlFor={`subtask-item-${task.id}-${subtask.id}`}
-                                  className={`text-xs sm:text-sm font-medium cursor-pointer block ${
-                                    subtask.completed ? 'line-through text-slate-400' : 'text-slate-800'
-                                  }`}
-                                >
-                                  {subtask.title}
-                                </label>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {subtask.phase && (
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200/80 shrink-0">
+                                      {subtask.phase}
+                                    </span>
+                                  )}
+                                  <label
+                                    htmlFor={`subtask-item-${task.id}-${subtask.id}`}
+                                    className={`text-xs sm:text-sm font-medium cursor-pointer ${
+                                      subtask.completed ? 'line-through text-slate-400' : 'text-slate-800'
+                                    }`}
+                                  >
+                                    {subtask.title}
+                                  </label>
+                                </div>
 
                                 {/* External resource reference link */}
                                 {subtask.resource && (

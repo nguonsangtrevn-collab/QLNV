@@ -210,8 +210,13 @@ export const ArchiveVault: React.FC<ArchiveVaultProps> = ({
                 </span>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {task.subtasks.map((st, i) => (
-                    <div key={st.id} className="flex items-center gap-2 text-slate-600">
-                      <span className="text-emerald-600 font-bold">✓</span>
+                    <div key={st.id} className="flex items-center gap-1.5 text-slate-600">
+                      <span className="text-emerald-600 font-bold shrink-0">✓</span>
+                      {st.phase && (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-200/80 text-slate-700 shrink-0">
+                          {st.phase}
+                        </span>
+                      )}
                       <span className="line-clamp-1">
                         {i + 1}. {st.title}
                       </span>
@@ -355,7 +360,14 @@ export const ArchiveVault: React.FC<ArchiveVaultProps> = ({
                           <tr key={st.id}>
                             <td className="p-2 text-center border-r font-medium">{i + 1}</td>
                             <td className="p-2 border-r">
-                              <span className="font-semibold block">{st.title}</span>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {st.phase && (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                    {st.phase}
+                                  </span>
+                                )}
+                                <span className="font-semibold">{st.title}</span>
+                              </div>
                               {st.resource && (
                                 <span className="text-[10px] text-blue-600 italic block mt-0.5">
                                   [{st.resource.title} - {st.resource.url}]

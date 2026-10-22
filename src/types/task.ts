@@ -8,6 +8,7 @@ export interface Subtask {
   id: string;
   title: string;
   completed: boolean;
+  phase?: string;
   resource?: SubtaskResource;
 }
 
@@ -51,6 +52,7 @@ export interface Task {
   links: TaskLink[];
   reminder: TaskReminder;
   notes?: string;
+  aiAnalysis?: string;
 }
 
 export interface ConnectedAppItem {

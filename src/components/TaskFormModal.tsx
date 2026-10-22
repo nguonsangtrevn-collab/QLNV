@@ -72,6 +72,7 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
         setCreatedAt(toDatetimeLocal(new Date(initialTask.createdAt)));
         setDueDate(toDatetimeLocal(new Date(initialTask.dueDate)));
         setSubtasks(initialTask.subtasks || []);
+        setAiAnalysis(initialTask.aiAnalysis || null);
         setAttachments(initialTask.attachments || []);
         setLinks(initialTask.links || []);
         setReminderEnabled(initialTask.reminder?.enabled ?? true);
@@ -84,6 +85,7 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
         setCreatedAt(toDatetimeLocal(new Date()));
         const targetDue = defaultDueDate ? new Date(defaultDueDate) : new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
         setDueDate(toDatetimeLocal(targetDue));
+        setAiAnalysis(null);
         setSubtasks([
           { id: 'sub-1', title: 'Khảo sát và thu thập thông tin ban đầu', completed: false },
           { id: 'sub-2', title: 'Triển khai thực hiện các hạng mục trọng tâm', completed: false },
@@ -118,10 +120,13 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
   const [reminderEnabled, setReminderEnabled] = useState(initialTask?.reminder?.enabled ?? true);
   const [reminderMinutes, setReminderMinutes] = useState(initialTask?.reminder?.minutesBefore || 60);
 
+  // AI Analysis summary state
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(initialTask?.aiAnalysis || null);
+
   // AI loading states
   const [isGeneratingDesc, setIsGeneratingDesc] = useState(false);
   const [isGeneratingSubtasks, setIsGeneratingSubtasks] = useState(false);
-  const [breakdownMode, setBreakdownMode] = useState<'phased' | 'standard' | 'detailed'>('phased');
+  const [breakdownMode, setBreakdownMode] = useState<'phased' | 'standard' | 'detailed' | 'deliverables'>('phased');
   const [breakdownAppend, setBreakdownAppend] = useState(false);
   const [showBreakdownOptions, setShowBreakdownOptions] = useState(false);
   const [breakdownSuccessMsg, setBreakdownSuccessMsg] = useState<string | null>(null);
@@ -168,10 +173,10 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
     }
   };
 
-  // AI 2: Phân rã nhiệm vụ lớn (WBS) từ mô tả dài thành các subtasks quản lý được
-  const handleBreakdownTask = async (customGranularity?: 'phased' | 'standard' | 'detailed') => {
+  // AI 2: Phân rã nhiệm vụ lớn (WBS) từ tên và mô tả chi tiết thành các subtasks quản lý được
+  const handleBreakdownTask = async (customGranularity?: 'phased' | 'standard' | 'detailed' | 'deliverables') => {
     if (!title.trim() && !description.trim()) {
-      setAiError('Vui lòng nhập tên nhiệm vụ hoặc dán nội dung mô tả để AI phân tích và phân rã.');
+      setAiError('Vui lòng nhập tên nhiệm vụ hoặc dán nội dung mô tả để AI nghiên cứu và phân rã.');
       return;
     }
     setAiError(null);
@@ -194,10 +199,15 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
       if (!res.ok) throw new Error('API server returned error');
       const data = await res.json();
 
+      if (data && data.analysis) {
+        setAiAnalysis(data.analysis);
+      }
+
       if (Array.isArray(data.subtasks) && data.subtasks.length > 0) {
         const mappedSubtasks: Subtask[] = data.subtasks.map((st: any, i: number) => ({
           id: `ai-wbs-${Date.now()}-${i}`,
           title: st.title,
+          phase: st.phase || undefined,
           completed: Boolean(st.completed),
           resource: st.resource
             ? {
@@ -210,10 +220,10 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
 
         if (breakdownAppend) {
           setSubtasks((prev) => [...prev, ...mappedSubtasks]);
-          setBreakdownSuccessMsg(`Đã bổ sung ${mappedSubtasks.length} công việc con từ phân tích mô tả lớn!`);
+          setBreakdownSuccessMsg(`Đã bổ sung ${mappedSubtasks.length} đầu việc từ nghiên cứu chi tiết!`);
         } else {
           setSubtasks(mappedSubtasks);
-          setBreakdownSuccessMsg(`Đã phân rã thành công ${mappedSubtasks.length} công việc con khả thi!`);
+          setBreakdownSuccessMsg(`Đã phân rã chuyên sâu ${mappedSubtasks.length} đầu việc bám sát nhiệm vụ!`);
         }
         setShowBreakdownOptions(false);
       } else {
@@ -222,43 +232,51 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
     } catch {
       // High-quality local smart breakdown
       const t = title.trim() || 'Nhiệm vụ trọng tâm';
+      const fallbackAnalysis = `Nhiệm vụ "${t}" đòi hỏi sự bám sát chặt chẽ từ khâu lập kế hoạch, chuẩn bị công cụ chuyên môn, phối hợp thực thi và nghiệm thu đầu ra rõ ràng.`;
+      setAiAnalysis(fallbackAnalysis);
+
       const fallbackList: Subtask[] = [
         {
           id: `fb-wbs-1-${Date.now()}`,
-          title: `[Giai đoạn 1: Chuẩn bị] Khảo sát hiện trạng & xây dựng kế hoạch triển khai "${t}"`,
+          title: `Khảo sát hiện trạng & xây dựng đề cương kế hoạch chi tiết cho "${t}"`,
+          phase: 'Chuẩn bị & Nghiên cứu',
           completed: false,
           resource: {
-            title: 'Mẫu kế hoạch quản lý công việc (Google Docs)',
-            url: 'https://docs.google.com/document/u/0/?ftv=1',
-            description: 'Mẫu đề cương kế hoạch',
+            title: 'Mẫu kế hoạch quản lý công việc chuẩn',
+            url: `https://www.google.com/search?q=${encodeURIComponent('kế hoạch ' + t)}`,
+            description: 'Tài liệu hướng dẫn kế hoạch',
           },
         },
         {
           id: `fb-wbs-2-${Date.now()}`,
-          title: `[Giai đoạn 1: Chuẩn bị] Phân công trách nhiệm cho các cá nhân & thống nhất mốc thời gian`,
+          title: `Rà soát cơ sở pháp lý, quy chuẩn chuyên môn và chuẩn bị tài nguyên triển khai`,
+          phase: 'Chuẩn bị & Nghiên cứu',
           completed: false,
         },
         {
           id: `fb-wbs-3-${Date.now()}`,
-          title: `[Giai đoạn 2: Triển khai] Thu thập tài liệu quy chuẩn và thực hiện các nội dung cốt lõi`,
+          title: `Triển khai các hạng mục kỹ thuật/nghiệp vụ trọng yếu của "${t}"`,
+          phase: 'Triển khai thực hiện',
           completed: false,
           resource: {
-            title: `Tra cứu tài liệu quy chuẩn trên Google`,
+            title: `Tài liệu hướng dẫn nghiệp vụ "${t}"`,
             url: `https://www.google.com/search?q=${encodeURIComponent(t)}`,
-            description: 'Tài liệu hướng dẫn',
+            description: 'Tra cứu chuyên môn',
           },
         },
         {
           id: `fb-wbs-4-${Date.now()}`,
-          title: `[Giai đoạn 2: Triển khai] Theo dõi tiến độ định kỳ và phối hợp giải quyết vướng mắc`,
+          title: `Kiểm tra tiến độ định kỳ, đánh giá rủi ro phát sinh và điều chỉnh giải pháp`,
+          phase: 'Triển khai thực hiện',
           completed: false,
         },
         {
           id: `fb-wbs-5-${Date.now()}`,
-          title: `[Giai đoạn 3: Nghiệm thu] Kiểm tra chất lượng (QA/QC), hoàn tất hồ sơ và báo cáo kết quả`,
+          title: `Nghiệm thu chất lượng, đóng gói sản phẩm/báo cáo tổng kết và bàn giao`,
+          phase: 'Nghiệm thu & Bàn giao',
           completed: false,
           resource: {
-            title: 'Quy trình kiểm tra và nghiệm thu công việc chuẩn',
+            title: 'Quy trình kiểm tra nghiệm thu công việc chuẩn',
             url: 'https://vi.wikipedia.org/wiki/Qu%E1%BA%A3n_l%C3%BD_d%E1%BB%B1_%C3%A1n',
             description: 'Tiêu chuẩn nghiệm thu',
           },
@@ -370,6 +388,7 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
       description: description.trim(),
       unit: unit || 'Ban Thanh Niên',
       priority,
+      aiAnalysis: aiAnalysis || undefined,
       createdAt: startIso,
       dueDate: dueIso,
       completedAt: calculatedP === 100 ? initialTask?.completedAt || new Date().toISOString() : undefined,
@@ -684,44 +703,65 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                   <button
                     type="button"
                     onClick={() => setBreakdownMode('phased')}
-                    className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
                       breakdownMode === 'phased'
                         ? 'bg-white border-indigo-500 ring-2 ring-indigo-500/20 text-indigo-900 shadow-xs'
                         : 'bg-white/60 border-slate-200 text-slate-700 hover:bg-white'
                     }`}
                   >
-                    <div className="font-bold text-xs">🏁 3 Giai đoạn</div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">Chuẩn bị → Triển khai → Nghiệm thu</div>
+                    <div className="font-bold text-xs flex items-center gap-1">
+                      <span>🏁</span> 3 Giai đoạn WBS
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">Chuẩn bị → Triển khai → Nghiệm thu</div>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setBreakdownMode('standard')}
-                    className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
                       breakdownMode === 'standard'
                         ? 'bg-white border-indigo-500 ring-2 ring-indigo-500/20 text-indigo-900 shadow-xs'
                         : 'bg-white/60 border-slate-200 text-slate-700 hover:bg-white'
                     }`}
                   >
-                    <div className="font-bold text-xs">📋 Tiêu chuẩn</div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">4 - 6 việc con hành động cụ thể</div>
+                    <div className="font-bold text-xs flex items-center gap-1">
+                      <span>📋</span> Tiêu chuẩn
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">5 - 7 việc con hành động cốt lõi</div>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setBreakdownMode('detailed')}
-                    className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
                       breakdownMode === 'detailed'
                         ? 'bg-white border-indigo-500 ring-2 ring-indigo-500/20 text-indigo-900 shadow-xs'
                         : 'bg-white/60 border-slate-200 text-slate-700 hover:bg-white'
                     }`}
                   >
-                    <div className="font-bold text-xs">🔬 Chi tiết sâu</div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">7 - 10 việc con quản lý chặt chẽ</div>
+                    <div className="font-bold text-xs flex items-center gap-1">
+                      <span>🔬</span> Chi tiết sâu
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">8 - 12 việc con vi mô & kỹ thuật</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setBreakdownMode('deliverables')}
+                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
+                      breakdownMode === 'deliverables'
+                        ? 'bg-white border-indigo-500 ring-2 ring-indigo-500/20 text-indigo-900 shadow-xs'
+                        : 'bg-white/60 border-slate-200 text-slate-700 hover:bg-white'
+                    }`}
+                  >
+                    <div className="font-bold text-xs flex items-center gap-1">
+                      <span>📦</span> Mốc đầu ra
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">Sản phẩm, báo cáo & bàn giao</div>
                   </button>
                 </div>
 
@@ -745,16 +785,39 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
                     {isGeneratingSubtasks ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        AI đang đọc & phân rã...
+                        AI đang nghiên cứu & phân rã...
                       </>
                     ) : (
                       <>
                         <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                        Bắt đầu phân rã WBS ngay
+                        Nghiên cứu & Phân rã ngay
                       </>
                     )}
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* AI Research Insight Callout Banner */}
+            {aiAnalysis && (
+              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-indigo-50 via-violet-50 to-blue-50 border border-indigo-200/90 space-y-1.5 animate-in fade-in duration-200 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-900">
+                    <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <span>AI Phân tích & Nghiên cứu bám sát nhiệm vụ:</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAiAnalysis(null)}
+                    className="text-[11px] text-slate-400 hover:text-slate-700 font-semibold cursor-pointer px-1.5 py-0.5 rounded-md hover:bg-indigo-100/50"
+                    title="Ẩn phân tích"
+                  >
+                    ✕ Đóng
+                  </button>
+                </div>
+                <p className="text-xs text-slate-700 leading-relaxed font-normal whitespace-pre-line">
+                  {aiAnalysis}
+                </p>
               </div>
             )}
 
@@ -791,14 +854,21 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
                     className="mt-1 w-4 h-4 rounded-sm text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                   />
                   <div className="flex-1 min-w-0">
-                    <label
-                      htmlFor={`subtask-check-${subtask.id}`}
-                      className={`block text-xs sm:text-sm font-medium cursor-pointer ${
-                        subtask.completed ? 'line-through text-slate-400' : 'text-slate-800'
-                      }`}
-                    >
-                      {index + 1}. {subtask.title}
-                    </label>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {subtask.phase && (
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200/80 shrink-0">
+                          {subtask.phase}
+                        </span>
+                      )}
+                      <label
+                        htmlFor={`subtask-check-${subtask.id}`}
+                        className={`text-xs sm:text-sm font-medium cursor-pointer ${
+                          subtask.completed ? 'line-through text-slate-400' : 'text-slate-800'
+                        }`}
+                      >
+                        {index + 1}. {subtask.title}
+                      </label>
+                    </div>
 
                     {/* Linked external resource if generated by AI */}
                     {subtask.resource && (

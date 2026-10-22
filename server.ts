@@ -36,12 +36,16 @@ const ai = apiKey
 async function callGeminiWithRetry<T>(
   operation: () => Promise<T>,
   retries = 2,
-  delayMs = 600
+  delayMs = 600,
+  timeoutMs = 10000
 ): Promise<T> {
   let lastError: any;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      return await operation();
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('ETIMEDOUT: Gemini API timeout')), timeoutMs)
+      );
+      return await Promise.race([operation(), timeoutPromise]);
     } catch (err: any) {
       lastError = err;
       const isTransient =
@@ -122,6 +126,294 @@ Chỉ trả về nội dung mô tả thuần túy, không kèm lời chào hay g
 /**
  * 2. Generate Subtasks / AI Decomposition for large tasks (WBS)
  */
+/**
+ * Helper: Smart Domain & Keyword Analyzer for Fallback WBS
+ * Decomposes titles by understanding domain, entities, and action verbs.
+ */
+function generateSmartDomainSubtasks(
+  taskTitle: string,
+  taskUnit: string,
+  mode: 'phased' | 'standard' | 'detailed' | 'deliverables' = 'phased'
+): { analysis: string; subtasks: any[] } {
+  const cleanTitle = taskTitle.trim();
+  const lower = cleanTitle.toLowerCase();
+
+  // Detect domain
+  let domain = 'general';
+  if (/website|web|app|phần mềm|api|hệ thống|database|máy chủ|server|cloud|frontend|backend|ui|ux|it|số hóa|mã nguồn|cntt|code|bug/.test(lower)) {
+    domain = 'tech';
+  } else if (/đoàn|đại hội|nghị quyết|chi bộ|chi đoàn|thanh niên|cán bộ|hội nghị|tuyên truyền|chính trị|học tập|chỉ thị/.test(lower)) {
+    domain = 'youth';
+  } else if (/sự kiện|hội thảo|workshop|tổ chức|khai mạc|lễ|giao lưu|giải|chương trình|hội thi|diễn đàn/.test(lower)) {
+    domain = 'event';
+  } else if (/kinh doanh|bán hàng|marketing|thị trường|doanh số|sản phẩm|ocop|quảng cáo|khách hàng|thương mại/.test(lower)) {
+    domain = 'commerce';
+  } else if (/đào tạo|tập huấn|khóa học|giáo trình|bài giảng|chuyên đề|học phần|hướng dẫn/.test(lower)) {
+    domain = 'education';
+  } else if (/báo cáo|thống kê|tài chính|ngân sách|thu chi|kế toán|kiểm toán|quyết toán|chi phí/.test(lower)) {
+    domain = 'finance';
+  }
+
+  const subject = cleanTitle.length > 55 ? `${cleanTitle.slice(0, 52)}...` : cleanTitle;
+
+  let analysis = `Nhiệm vụ "${subject}" được phân tích chuyên sâu nhằm bám sát mục tiêu của ${taskUnit}. Kế hoạch được phân rã chặt chẽ qua các mốc hành động cụ thể, gắn liền với đối tượng và sản phẩm thực tế cần đạt.`;
+
+  let subtaskDefs: Array<{ phase: string; title: string; docTitle: string; query: string; desc: string }> = [];
+
+  if (domain === 'tech') {
+    analysis = `Nhiệm vụ công nghệ "${subject}": Đòi hỏi bóc tách rõ kiến trúc hệ thống, môi trường kỹ thuật, kiểm thử luồng tích hợp và tài liệu bàn giao kỹ thuật cho ${taskUnit}.`;
+    subtaskDefs = [
+      {
+        phase: 'Chuẩn bị & Khảo sát',
+        title: `[Chuẩn bị] Khảo sát yêu cầu nghiệp vụ, thông số kỹ thuật và kiến trúc cho "${subject}"`,
+        docTitle: 'Đặc tả yêu cầu phần mềm & kiến trúc (SRS)',
+        query: `software requirements specification ${subject}`,
+        desc: 'Tài liệu chuẩn hóa đặc tả kỹ thuật và kiến trúc hệ thống',
+      },
+      {
+        phase: 'Chuẩn bị & Thiết kế',
+        title: `[Chuẩn bị] Thiết kế cơ sở dữ liệu, sơ đồ luồng dữ liệu (Data Flow) và giao diện người dùng mẫu`,
+        docTitle: 'Tài liệu thiết kế Database & UI Wireframe',
+        query: `database schema design wireframe ${subject}`,
+        desc: 'Mẫu thiết kế lược đồ quan hệ và giao diện trực quan',
+      },
+      {
+        phase: 'Triển khai & Kỹ thuật',
+        title: `[Triển khai] Thiết lập môi trường phát triển (Dev/Staging) và tích hợp các module/thư viện nền tảng`,
+        docTitle: 'Quy chuẩn cấu hình môi trường phát triển & bảo mật',
+        query: `setup environment security guidelines ${subject}`,
+        desc: 'Checklist an toàn thông tin và môi trường vận hành',
+      },
+      {
+        phase: 'Triển khai & Lập trình',
+        title: `[Triển khai] Lập trình các tính năng cốt lõi và kết nối API/Dịch vụ cho "${subject}"`,
+        docTitle: 'Tài liệu hướng dẫn tích hợp API & mã nguồn',
+        query: `API integration best practices ${subject}`,
+        desc: 'Tài liệu tra cứu chuẩn kết nối API và xử lý dữ liệu',
+      },
+      {
+        phase: 'Kiểm thử & Tối ưu',
+        title: `[Kiểm thử] Xây dựng kịch bản kiểm thử (Test Cases), kiểm tra lỗi logic và hiệu năng`,
+        docTitle: 'Biểu mẫu kịch bản kiểm thử QA/QC phần mềm',
+        query: `QA test cases checklist ${subject}`,
+        desc: 'Mẫu kiểm thử chức năng, tích hợp và kiểm soát lỗi',
+      },
+      {
+        phase: 'Kiểm thử & Tối ưu',
+        title: `[Kiểm thử] Khắc phục lỗi phát sinh (Bug fix), tối ưu hóa tốc độ tải và tính ổn định`,
+        docTitle: 'Bảng theo dõi và quản lý lỗi (Bug Tracker)',
+        query: `bug tracking performance optimization ${subject}`,
+        desc: 'Mẫu biểu kiểm soát lỗi và tiêu chí chấp nhận chất lượng',
+      },
+      {
+        phase: 'Nghiệm thu & Bàn giao',
+        title: `[Nghiệm thu] Biên soạn tài liệu hướng dẫn sử dụng và hướng dẫn vận hành hệ thống`,
+        docTitle: 'Tài liệu hướng dẫn vận hành hệ thống (User Manual)',
+        query: `user manual deployment documentation ${subject}`,
+        desc: 'Mẫu tài liệu hướng dẫn sử dụng và chuyển giao công nghệ',
+      },
+      {
+        phase: 'Nghiệm thu & Bàn giao',
+        title: `[Nghiệm thu] Tổ chức nghiệm thu kỹ thuật, bàn giao sản phẩm hoàn thiện cho ${taskUnit}`,
+        docTitle: 'Biên bản nghiệm thu và bàn giao sản phẩm công nghệ',
+        query: `biên bản nghiệm thu phần mềm công nghệ thông tin`,
+        desc: 'Mẫu biên bản đánh giá đạt tiêu chuẩn và ký kết nghiệm thu',
+      },
+    ];
+  } else if (domain === 'youth') {
+    analysis = `Nhiệm vụ công tác đoàn thể "${subject}": Cần đảm bảo tính chính trị, sự hưởng ứng của đoàn viên thanh niên ${taskUnit}, phối hợp đồng bộ và lưu trữ hồ sơ minh chứng đầy đủ.`;
+    subtaskDefs = [
+      {
+        phase: 'Chuẩn bị & Kế hoạch',
+        title: `[Chuẩn bị] Xây dựng kế hoạch tổ chức chi tiết và dự trù kinh phí cho "${subject}"`,
+        docTitle: 'Mẫu kế hoạch hoạt động phong trào Đoàn Thanh niên',
+        query: `kế hoạch tổ chức ${subject} đoàn thanh niên`,
+        desc: 'Mẫu kế hoạch phân kỳ mục tiêu và cơ chế phối hợp',
+      },
+      {
+        phase: 'Chuẩn bị & Tuyên truyền',
+        title: `[Chuẩn bị] Ban hành thông báo, công văn hướng dẫn và phát động tới các chi đoàn/đơn vị`,
+        docTitle: 'Mẫu thông tri / công văn triệu tập Đoàn',
+        query: `công văn thông tri triệu tập ${subject}`,
+        desc: 'Văn bản hướng dẫn chỉ đạo triển khai cấp cơ sở',
+      },
+      {
+        phase: 'Triển khai & Tuyên truyền',
+        title: `[Triển khai] Thiết kế ấn phẩm truyền thông (Banner, Infographic, Video) lan tỏa nội dung "${subject}"`,
+        docTitle: 'Bộ công cụ thiết kế truyền thông số Đoàn Thanh niên',
+        query: `infographic poster truyền thông ${subject}`,
+        desc: 'Mẫu ấn phẩm trực quan phục vụ mạng xã hội và hội nghị',
+      },
+      {
+        phase: 'Triển khai & Thực hiện',
+        title: `[Triển khai] Điều phối lực lượng đoàn viên, hậu cần và tổ chức các hoạt động trọng tâm`,
+        docTitle: 'Bảng phân công nhiệm vụ chi tiết và kịch bản điều hành',
+        query: `kịch bản tổ chức chi tiết ${subject}`,
+        desc: 'Kịch bản điều phối thời gian và nhân lực hiện trường',
+      },
+      {
+        phase: 'Triển khai & Thực hiện',
+        title: `[Triển khai] Theo dõi, đôn đốc tiến độ thực hiện tại các chi đoàn thuộc ${taskUnit}`,
+        docTitle: 'Bảng theo dõi thi đua và tiến độ thực hiện',
+        query: `bảng theo dõi thi đua tiến độ hoạt động đoàn`,
+        desc: 'Công cụ đánh giá mức độ tham gia và hoàn thành chỉ tiêu',
+      },
+      {
+        phase: 'Nghiệm thu & Đánh giá',
+        title: `[Nghiệm thu] Tổng hợp số liệu, hình ảnh minh chứng và phản hồi của người tham gia`,
+        docTitle: 'Hồ sơ minh chứng và phiếu thu thập ý kiến đánh giá',
+        query: `báo cáo kết quả hoạt động phong trào đoàn minh chứng`,
+        desc: 'Mẫu tổng hợp kết quả định lượng và định tính',
+      },
+      {
+        phase: 'Nghiệm thu & Báo cáo',
+        title: `[Nghiệm thu] Hoàn thiện báo cáo tổng kết, đề xuất khen thưởng và gửi cấp ủy/đoàn cấp trên`,
+        docTitle: 'Mẫu báo cáo tổng kết chương trình & đề xuất khen thưởng',
+        query: `mẫu báo cáo tổng kết hoạt động đoàn thanh niên`,
+        desc: 'Báo cáo chính thức đánh giá hiệu quả và bài học kinh nghiệm',
+      },
+    ];
+  } else if (domain === 'event') {
+    analysis = `Nhiệm vụ tổ chức sự kiện "${subject}": Đòi hỏi kịch bản điều hành chặt chẽ, kiểm soát khách mời, âm thanh ánh sáng và phương án dự phòng cho ${taskUnit}.`;
+    subtaskDefs = [
+      {
+        phase: 'Chuẩn bị & Kịch bản',
+        title: `[Chuẩn bị] Xây dựng kịch bản chương trình tổng thể (Timeline) và kịch bản MC cho "${subject}"`,
+        docTitle: 'Mẫu kịch bản điều hành sự kiện chuẩn (Master Timeline)',
+        query: `kịch bản tổ chức sự kiện master timeline ${subject}`,
+        desc: 'Mẫu phân bổ thời gian chi tiết từng phút cho sự kiện',
+      },
+      {
+        phase: 'Chuẩn bị & Hậu cần',
+        title: `[Chuẩn bị] Khảo sát địa điểm, đặt thiết bị âm thanh ánh sáng, sân khấu và trang trí`,
+        docTitle: 'Checklist hậu cần, kỹ thuật và thiết bị sự kiện',
+        query: `checklist hậu cần âm thanh ánh sáng sự kiện`,
+        desc: 'Bảng kiểm tra trang thiết bị và nhà cung cấp dịch vụ',
+      },
+      {
+        phase: 'Chuẩn bị & Khách mời',
+        title: `[Chuẩn bị] Lập danh sách khách mời, gửi thư mời và xác nhận sự tham dự`,
+        docTitle: 'Biểu mẫu quản lý danh sách đại biểu & khách mời',
+        query: `mẫu quản lý danh sách khách mời đại biểu sự kiện`,
+        desc: 'Theo dõi tình trạng gửi thiệp và phản hồi tham dự',
+      },
+      {
+        phase: 'Triển khai & Tổng duyệt',
+        title: `[Triển khai] Tổ chức buổi chạy thử (Rehearsal/Tổng duyệt) rà soát các khâu kỹ thuật`,
+        docTitle: 'Quy trình tổng duyệt sự kiện và xử lý sự cố phát sinh',
+        query: `quy trình rehearsal tổng duyệt sự kiện`,
+        desc: 'Kế hoạch diễn tập và kiểm tra phối hợp các bộ phận',
+      },
+      {
+        phase: 'Triển khai & Thực hiện',
+        title: `[Triển khai] Đón tiếp đại biểu, điều hành sự kiện chính thức theo kịch bản phê duyệt`,
+        docTitle: 'Kịch bản lễ tân đón tiếp và điều phối sân khấu',
+        query: `quy trình lễ tân đón tiếp đại biểu sự kiện`,
+        desc: 'Hướng dẫn sắp xếp chỗ ngồi, đón tiếp và phục vụ',
+      },
+      {
+        phase: 'Nghiệm thu & Đánh giá',
+        title: `[Nghiệm thu] Thu dọn hiện trường, kiểm kê tài sản và quyết toán chi phí với các bên`,
+        docTitle: 'Bảng kiểm kê tài sản và thanh quyết toán sự kiện',
+        query: `quyết toán chi phí tổ chức sự kiện`,
+        desc: 'Mẫu đối soát hóa đơn chứng từ và chi phí thực tế',
+      },
+      {
+        phase: 'Nghiệm thu & Báo cáo',
+        title: `[Nghiệm thu] Họp rút kinh nghiệm, tổng hợp hình ảnh/video và lưu trữ hồ sơ sự kiện`,
+        docTitle: 'Biên bản họp rút kinh nghiệm và báo cáo truyền thông',
+        query: `báo cáo tổng kết rút kinh nghiệm sự kiện`,
+        desc: 'Đánh giá KPI người tham dự và bài học kinh nghiệm',
+      },
+    ];
+  } else {
+    // Default contextual domain
+    analysis = `Nhiệm vụ trọng tâm "${subject}": Được phân tích chi tiết hóa các hành động cụ thể gắn liền với đơn vị ${taskUnit}, xác định rõ đầu ra và kiểm soát chất lượng.`;
+    subtaskDefs = [
+      {
+        phase: 'Chuẩn bị & Nghiên cứu',
+        title: `[Chuẩn bị] Nghiên cứu cơ sở quy định, khảo sát hiện trạng phục vụ triển khai "${subject}"`,
+        docTitle: 'Tài liệu hướng dẫn tra cứu văn bản & khảo sát nghiệp vụ',
+        query: `hướng dẫn khảo sát quy định ${subject}`,
+        desc: 'Cơ sở tra cứu quy chuẩn và dữ liệu nền tảng',
+      },
+      {
+        phase: 'Chuẩn bị & Kế hoạch',
+        title: `[Chuẩn bị] Lập đề cương chi tiết, xác định chỉ số mục tiêu (KPI) và phân công cán bộ ${taskUnit}`,
+        docTitle: 'Mẫu đề cương kế hoạch công tác ma trận RACI',
+        query: `kế hoạch hành động chi tiết ${subject}`,
+        desc: 'Khung phân công trách nhiệm và lộ trình triển khai',
+      },
+      {
+        phase: 'Triển khai & Thực hiện',
+        title: `[Triển khai] Thu thập dữ liệu thực tế, phối hợp các đơn vị liên quan xử lý nội dung cốt lõi`,
+        docTitle: 'Biểu mẫu thu thập dữ liệu và trao đổi liên phòng ban',
+        query: `thu thập dữ liệu phối hợp công tác ${subject}`,
+        desc: 'Mẫu phiếu khảo sát và biên bản làm việc phối hợp',
+      },
+      {
+        phase: 'Triển khai & Thực hiện',
+        title: `[Triển khai] Trực tiếp thực thi các hạng mục chuyên môn chính của "${subject}"`,
+        docTitle: 'Bảng theo dõi tiến độ công việc hàng tuần',
+        query: `bảng tiến độ thực thi ${subject}`,
+        desc: 'Công cụ giám sát đầu việc và mốc thời gian hoàn thành',
+      },
+      {
+        phase: 'Kiểm tra & Hiệu chỉnh',
+        title: `[Kiểm tra] Rà soát chất lượng sản phẩm trung gian, giải quyết khó khăn và tối ưu hóa`,
+        docTitle: 'Checklist kiểm soát chất lượng công việc (QA/QC)',
+        query: `checklist kiểm soát chất lượng ${subject}`,
+        desc: 'Bảng tiêu chí rà soát sai sót và phương án hiệu chỉnh',
+      },
+      {
+        phase: 'Nghiệm thu & Báo cáo',
+        title: `[Nghiệm thu] Hoàn thiện sản phẩm cuối cùng, tổng hợp hồ sơ minh chứng đạt chuẩn`,
+        docTitle: 'Mẫu hồ sơ nghiệm thu và biên bản bàn giao kết quả',
+        query: `mẫu biên bản nghiệm thu ${subject}`,
+        desc: 'Hồ sơ đánh giá nghiệm thu sản phẩm nhiệm vụ',
+      },
+      {
+        phase: 'Nghiệm thu & Báo cáo',
+        title: `[Nghiệm thu] Lập báo cáo kết quả thực hiện trình lãnh đạo và lưu trữ hồ sơ`,
+        docTitle: 'Mẫu báo cáo kết quả thực hiện nhiệm vụ',
+        query: `báo cáo kết quả hoàn thành nhiệm vụ ${subject}`,
+        desc: 'Báo cáo tổng kết hoàn thành và kiến nghị tiếp theo',
+      },
+    ];
+  }
+
+  // Filter based on granularity
+  let selected = subtaskDefs;
+  if (mode === 'standard') {
+    selected = subtaskDefs.filter((_, idx) => idx % 2 === 0 || idx === subtaskDefs.length - 1);
+    if (selected.length < 5) selected = subtaskDefs.slice(0, 5);
+  } else if (mode === 'detailed') {
+    selected = subtaskDefs;
+  } else if (mode === 'deliverables') {
+    selected = subtaskDefs.map((st) => ({
+      ...st,
+      title: st.title.replace(/^\[.*?\]\s*/, '📦 Sản phẩm: '),
+    }));
+  }
+
+  const subtasks = selected.map((s) => ({
+    title: s.title,
+    phase: s.phase,
+    completed: false,
+    resource: {
+      title: s.docTitle,
+      url: `https://www.google.com/search?q=${encodeURIComponent(s.query)}`,
+      description: s.desc,
+    },
+  }));
+
+  return { analysis, subtasks };
+}
+
+/**
+ * 2. Deep Semantic AI Decomposition for tasks (WBS)
+ * Strictly analyzes the title keywords, domain context, and decomposes action-oriented subtasks.
+ */
 app.post('/api/ai/breakdown-task', async (req: Request, res: Response) => {
   try {
     const { title, description, unit, granularity } = req.body;
@@ -132,85 +424,51 @@ app.post('/api/ai/breakdown-task', async (req: Request, res: Response) => {
     const taskTitle = (title || 'Nhiệm vụ lớn').trim();
     const taskDesc = (description || '').trim();
     const taskUnit = (unit || 'Đơn vị thực hiện').trim();
-    const mode = granularity || 'phased';
+    const mode = (granularity || 'phased') as 'phased' | 'standard' | 'detailed' | 'deliverables';
 
     if (!ai) {
-      // Intelligent fallback breakdown when offline / no API key
-      const fallbackSubtasks = [
-        {
-          title: `[Giai đoạn 1: Chuẩn bị] Khảo sát hiện trạng & xây dựng đề cương thực hiện "${taskTitle}"`,
-          completed: false,
-          resource: {
-            title: 'Mẫu đề cương kế hoạch hành động (Google Docs)',
-            url: 'https://docs.google.com/document/u/0/?ftv=1',
-            description: 'Tài liệu hướng dẫn mẫu lập kế hoạch triển khai',
-          },
-        },
-        {
-          title: `[Giai đoạn 1: Chuẩn bị] Phân công trách nhiệm cho các cá nhân/bộ phận thuộc ${taskUnit}`,
-          completed: false,
-          resource: {
-            title: 'Biểu mẫu phân công công việc ma trận RACI',
-            url: 'https://vi.wikipedia.org/wiki/Ma_tr%E1%BA%ADn_ph%C3%A2n_c%C3%B4ng_tr%C3%A1ch_nhi%E1%BB%87m',
-            description: 'Khung phân quyền và chịu trách nhiệm',
-          },
-        },
-        {
-          title: `[Giai đoạn 2: Triển khai] Thu thập tài liệu quy chuẩn và dữ liệu nghiệp vụ trọng tâm`,
-          completed: false,
-          resource: {
-            title: 'Tra cứu quy định & văn bản liên quan',
-            url: 'https://www.google.com/search?q=' + encodeURIComponent(taskTitle),
-            description: 'Tìm kiếm cơ sở dữ liệu và chỉ đạo thực thi',
-          },
-        },
-        {
-          title: `[Giai đoạn 2: Triển khai] Tiến hành thực hiện các hạng mục nội dung chính theo mốc tiến độ`,
-          completed: false,
-          resource: {
-            title: 'Bảng theo dõi tiến độ công việc',
-            url: 'https://docs.google.com/spreadsheets/u/0/',
-            description: 'Quản lý mốc thời gian và chỉ số hoàn thành',
-          },
-        },
-        {
-          title: `[Giai đoạn 3: Nghiệm thu] Kiểm tra chất lượng (QA/QC), rà soát tiêu chí đánh giá`,
-          completed: false,
-          resource: {
-            title: 'Quy trình kiểm tra chất lượng và nghiệm thu chuẩn',
-            url: 'https://vi.wikipedia.org/wiki/Qu%E1%BA%A3n_l%C3%BD_d%E1%BB%B1_%C3%A1n',
-            description: 'Tiêu chuẩn đánh giá và nghiệm thu nhiệm vụ',
-          },
-        },
-        {
-          title: `[Giai đoạn 3: Nghiệm thu] Tổng hợp hồ sơ minh chứng, hoàn thiện báo cáo và nghiệm thu`,
-          completed: false,
-          resource: {
-            title: 'Mẫu biên bản nghiệm thu và bàn giao kết quả',
-            url: 'https://docs.google.com/document/u/0/',
-            description: 'Biên bản đánh giá hoàn tất nhiệm vụ',
-          },
-        },
-      ];
-      return res.json({ subtasks: fallbackSubtasks });
+      const fallbackResult = generateSmartDomainSubtasks(taskTitle, taskUnit, mode);
+      return res.json({
+        analysis: fallbackResult.analysis,
+        subtasks: fallbackResult.subtasks,
+        fallback: true,
+      });
     }
 
-    const countPrompt = mode === 'detailed' ? '7 đến 10 việc con chi tiết' : mode === 'phased' ? '5 đến 7 việc con chia rõ theo 3 giai đoạn: [Giai đoạn 1: Chuẩn bị], [Giai đoạn 2: Triển khai], [Giai đoạn 3: Nghiệm thu]' : '4 đến 6 việc con thực tế';
+    const countPrompt =
+      mode === 'detailed'
+        ? '8 đến 12 việc con chi tiết sâu sắc, tỉ mỉ từng khâu nghiệp vụ, kỹ thuật, dữ liệu và kiểm soát rủi ro'
+        : mode === 'phased'
+        ? '6 đến 8 việc con phân chia cân đối theo 3 giai đoạn rõ rệt: [Chuẩn bị & Nghiên cứu], [Triển khai & Thực hiện], [Kiểm thử, Nghiệm thu & Bàn giao]'
+        : mode === 'deliverables'
+        ? '5 đến 7 mốc công việc tập trung vào việc tạo ra và bàn giao các sản phẩm đầu ra cụ thể'
+        : '5 đến 7 việc con hành động cốt lõi, thứ tự logic, kết quả đo lường rõ ràng';
 
-    const prompt = `Bạn là Chuyên gia Cao cấp về Phân rã Công việc (Work Breakdown Structure - WBS) và Quản lý Dự án.
-Nhiệm vụ: "${taskTitle}"
-Đơn vị phụ trách: "${taskUnit}"
-Mô tả chi tiết của nhiệm vụ:
-"""
-${taskDesc || 'Chưa có mô tả cụ thể.'}
-"""
+    const prompt = `Bạn là Chuyên gia Cao cấp về Phân tích & Phân rã Công việc (Work Breakdown Structure - WBS), Nghiên cứu Quy trình Nghiệp vụ Thực chiến.
 
-Hãy phân tích toàn diện mô tả dài trên, nhận diện các mốc quan trọng, yêu cầu đầu ra, các bước chuẩn bị, thực thi và nghiệm thu.
-Tạo danh sách ${countPrompt}.
-Với mỗi subtask con:
-- title: Tên công việc con ngắn gọn, chứa hành động rõ ràng bằng tiếng Việt.
-- completed: false.
-- resource: Gợi ý 1 tài nguyên/tài liệu mẫu trên internet (title, url thực tế uy tín có thể mở được như Google Docs, Sheets, Wikipedia, cổng văn bản pháp luật, Google Search, và description ngắn).`;
+NHIỆM VỤ CẦN NGHIÊN CỨU & PHÂN RÃ:
+- Tiêu đề nhiệm vụ: "${taskTitle}"
+- Đơn vị phụ trách: "${taskUnit}"
+- Mô tả / Ngữ cảnh: "${taskDesc || 'Không có mô tả phụ, hãy phân tích và nghiên cứu sâu trực tiếp từ tiêu đề trên.'}"
+- Mức độ phân rã được chọn: "${mode}" (${countPrompt})
+
+YÊU CẦU BẮT BUỘC ĐỂ ĐẢM BẢO TÍNH BÁM SÁT 100% TIÊU ĐỀ:
+1. NGHIÊN CỨU & BÓC TÁCH NGỮ NGHĨA TIÊU ĐỀ:
+   - Nghiên cứu sâu: Tiêu đề "${taskTitle}" muốn làm gì? Thuộc lĩnh vực nào (Công nghệ thông tin, Đoàn/Đoàn thể, Hành chính nhà nước, Giáo dục/Đào tạo, Bán hàng/Thương mại, Tổ chức sự kiện, Tài chính/Ngân sách, v.v.)?
+   - Nhận diện các thực thể, thuật ngữ, công cụ, văn bản chỉ đạo hoặc đối tượng thụ hưởng có trong tiêu đề.
+2. NGUYÊN TẮC BÁM SÁT (CHỐNG CÂU CHUNG CHUNG):
+   - TUYỆT ĐỐI CẤM các câu mơ hồ như: "Lập kế hoạch chi tiết", "Thu thập dữ liệu", "Triển khai nội dung chính", "Kiểm tra chất lượng", "Nghiệm thu công việc".
+   - MỌI đầu việc con (title) BẮT BUỘC phải gọi tên cụ thể đối tượng, công cụ, nội dung hoặc công việc thực tế của "${taskTitle}".
+   Ví dụ:
+   - Nếu tiêu đề là "Tổ chức giải bóng đá Thanh niên 2026": task phải là "Ban hành Điều lệ giải bóng đá Thanh niên 2026 và gửi đến các chi đoàn", "Thu nhận danh sách đăng ký vận động viên và bốc thăm chia bảng", "Thuê sân cỏ, bố trí trọng tài và chuẩn bị cờ cúp y tế", "Tổ chức lễ khai mạc và điều hành các trận đấu vòng bảng", v.v.
+   - Nếu tiêu đề là "Xây dựng tính năng thanh toán VNPay": task phải là "Đăng ký tài khoản Merchant VNPay Sandbox và nhận API Key", "Lập trình Endpoint khởi tạo giao dịch VNPay SDK", "Xử lý IPN Webhook xác nhận trạng thái thanh toán đơn hàng", "Kiểm thử luồng thanh toán QR và thẻ nội địa trên môi trường test", v.v.
+3. TÀI NGUYÊN THỰC TẾ ĐÍNH KÈM (resource):
+   - Gợi ý 1 tài liệu/công cụ thực tế bám sát đầu việc:
+     + title: Tên tài liệu/công cụ gợi ý (ví dụ: "Tài liệu kỹ thuật tích hợp VNPay", "Mẫu điều lệ giải đấu thể thao Đoàn thanh niên", v.v.)
+     + url: Link tra cứu Google chuyên sâu https://www.google.com/search?q=... với từ khóa chuẩn xác hoặc link mẫu Google Docs/Sheets/Wikipedia chính xác.
+     + description: Hướng dẫn ngắn gọn cách ứng dụng tài liệu này vào công việc con.
+4. ĐOẠN PHÂN TÍCH NGHIÊN CỨU (analysis):
+   - Trả về 2-3 câu phân tích sâu sắc mục tiêu cốt lõi, phạm vi công việc và lời khuyên chiến lược cho người thực hiện nhiệm vụ này.`;
 
     const response = await callGeminiWithRetry(() =>
       ai.models.generateContent({
@@ -221,12 +479,23 @@ Với mỗi subtask con:
           responseSchema: {
             type: Type.OBJECT,
             properties: {
+              analysis: {
+                type: Type.STRING,
+                description: 'Đoạn phân tích sâu sắc về mục tiêu, bản chất nhiệm vụ và chiến lược triển khai bám sát tiêu đề.',
+              },
               subtasks: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    title: { type: Type.STRING },
+                    title: {
+                      type: Type.STRING,
+                      description: 'Tên việc con chứa từ khóa, hành động và đối tượng cụ thể từ tiêu đề nhiệm vụ.',
+                    },
+                    phase: {
+                      type: Type.STRING,
+                      description: 'Tên giai đoạn (ví dụ: Chuẩn bị & Khảo sát, Triển khai & Thực hiện, Kiểm thử & Nghiệm thu)',
+                    },
                     completed: { type: Type.BOOLEAN },
                     resource: {
                       type: Type.OBJECT,
@@ -242,143 +511,69 @@ Với mỗi subtask con:
                 },
               },
             },
-            required: ['subtasks'],
+            required: ['analysis', 'subtasks'],
           },
         },
       })
     );
 
-    const parsed = JSON.parse(response.text || '{"subtasks": []}');
+    const parsed = JSON.parse(response.text || '{}');
+    if (!parsed.subtasks || !Array.isArray(parsed.subtasks) || parsed.subtasks.length === 0) {
+      const fallbackResult = generateSmartDomainSubtasks(taskTitle, taskUnit, mode);
+      return res.json({
+        analysis: fallbackResult.analysis,
+        subtasks: fallbackResult.subtasks,
+        fallback: true,
+      });
+    }
+
     return res.json(parsed);
   } catch (error: any) {
-    console.warn('[AI Service] Notice in breakdown-task (network/ECONNRESET), serving domain fallback:', error?.message);
+    console.warn('[AI Service] Notice in breakdown-task, serving smart domain fallback:', error?.message);
     const t = (req.body?.title || 'Nhiệm vụ trọng tâm').trim();
     const u = (req.body?.unit || 'Đơn vị thực hiện').trim();
+    const mode = (req.body?.granularity || 'phased') as 'phased' | 'standard' | 'detailed' | 'deliverables';
+    const fallbackResult = generateSmartDomainSubtasks(t, u, mode);
     return res.json({
-      subtasks: [
-        {
-          title: `[Giai đoạn 1: Chuẩn bị] Khảo sát hiện trạng & xây dựng đề cương thực hiện "${t}"`,
-          completed: false,
-          resource: {
-            title: 'Mẫu đề cương kế hoạch hành động (Google Docs)',
-            url: 'https://docs.google.com/document/u/0/?ftv=1',
-            description: 'Tài liệu hướng dẫn mẫu lập kế hoạch triển khai',
-          },
-        },
-        {
-          title: `[Giai đoạn 1: Chuẩn bị] Phân công trách nhiệm cho các cá nhân/bộ phận thuộc ${u}`,
-          completed: false,
-          resource: {
-            title: 'Biểu mẫu phân công công việc ma trận RACI',
-            url: 'https://vi.wikipedia.org/wiki/Ma_tr%E1%BA%ADn_ph%C3%A2n_c%C3%B4ng_tr%C3%A1ch_nhi%E1%BB%87m',
-            description: 'Khung phân quyền và chịu trách nhiệm',
-          },
-        },
-        {
-          title: `[Giai đoạn 2: Triển khai] Thu thập tài liệu quy chuẩn và dữ liệu nghiệp vụ trọng tâm`,
-          completed: false,
-          resource: {
-            title: 'Tra cứu quy định & văn bản liên quan',
-            url: 'https://www.google.com/search?q=' + encodeURIComponent(t),
-            description: 'Tìm kiếm cơ sở dữ liệu và chỉ đạo thực thi',
-          },
-        },
-        {
-          title: `[Giai đoạn 2: Triển khai] Tiến hành thực hiện các hạng mục nội dung chính theo mốc tiến độ`,
-          completed: false,
-          resource: {
-            title: 'Bảng theo dõi tiến độ công việc',
-            url: 'https://docs.google.com/spreadsheets/u/0/',
-            description: 'Quản lý mốc thời gian và chỉ số hoàn thành',
-          },
-        },
-        {
-          title: `[Giai đoạn 3: Nghiệm thu] Kiểm tra chất lượng (QA/QC), rà soát tiêu chí đánh giá`,
-          completed: false,
-          resource: {
-            title: 'Quy trình kiểm tra chất lượng và nghiệm thu chuẩn',
-            url: 'https://vi.wikipedia.org/wiki/Qu%E1%BA%A3n_l%C3%BD_d%E1%BB%B1_%C3%A1n',
-            description: 'Tiêu chuẩn đánh giá và nghiệm thu nhiệm vụ',
-          },
-        },
-        {
-          title: `[Giai đoạn 3: Nghiệm thu] Tổng hợp hồ sơ minh chứng, hoàn thiện báo cáo và nghiệm thu`,
-          completed: false,
-          resource: {
-            title: 'Mẫu biên bản nghiệm thu và bàn giao kết quả',
-            url: 'https://docs.google.com/document/u/0/',
-            description: 'Biên bản đánh giá hoàn tất nhiệm vụ',
-          },
-        },
-      ],
+      analysis: fallbackResult.analysis,
+      subtasks: fallbackResult.subtasks,
       fallback: true,
     });
   }
 });
 
 app.post('/api/ai/generate-subtasks', async (req: Request, res: Response) => {
-  // Alias to breakdown-task for backward compatibility
+  // Alias to breakdown-task with deep semantic analysis
   try {
-    const { title, description, unit } = req.body;
-    if (!title && !description) {
-      return res.status(400).json({ error: 'Tiêu đề nhiệm vụ là bắt buộc' });
-    }
-
-    const t = (title || 'Nhiệm vụ trọng tâm').trim();
+    const { title, description, unit, granularity } = req.body;
+    const taskTitle = (title || 'Nhiệm vụ trọng tâm').trim();
+    const taskDesc = (description || '').trim();
+    const taskUnit = (unit || 'Đơn vị thực hiện').trim();
+    const mode = (granularity || 'phased') as 'phased' | 'standard' | 'detailed' | 'deliverables';
 
     if (!ai) {
+      const fallbackResult = generateSmartDomainSubtasks(taskTitle, taskUnit, mode);
       return res.json({
-        subtasks: [
-          {
-            title: `Lập kế hoạch chi tiết và phân công nhân sự cho "${t}"`,
-            completed: false,
-            resource: {
-              title: 'Mẫu kế hoạch triển khai công việc (Google Docs)',
-              url: 'https://docs.google.com/document/u/0/?ftv=1',
-              description: 'Tài liệu hướng dẫn mẫu kế hoạch hành động',
-            },
-          },
-          {
-            title: 'Thu thập dữ liệu, tài liệu quy chuẩn và liên hệ đơn vị phối hợp',
-            completed: false,
-            resource: {
-              title: 'Cổng thông tin điện tử & tài liệu tham chiếu',
-              url: 'https://www.google.com/search?q=' + encodeURIComponent(t),
-              description: 'Tra cứu thông tin và tài liệu thực thi liên quan',
-            },
-          },
-          {
-            title: 'Tiến hành triển khai các hạng mục nội dung trọng yếu',
-            completed: false,
-            resource: {
-              title: 'Bảng theo dõi tiến độ công việc',
-              url: 'https://docs.google.com/spreadsheets/u/0/',
-              description: 'Quản lý mốc thời gian và chỉ số hoàn thành',
-            },
-          },
-          {
-            title: 'Kiểm tra chất lượng (QA/QC), rà soát tiêu chí và báo cáo kết quả',
-            completed: false,
-            resource: {
-              title: 'Quy trình nghiệm thu công việc chuẩn',
-              url: 'https://vi.wikipedia.org/wiki/Qu%E1%BA%A3n_l%C3%BD_d%E1%BB%B1_%C3%A1n',
-              description: 'Tiêu chuẩn đánh giá và nghiệm thu nhiệm vụ',
-            },
-          },
-        ],
+        analysis: fallbackResult.analysis,
+        subtasks: fallbackResult.subtasks,
+        fallback: true,
       });
     }
 
-    const prompt = `Bạn là chuyên gia cố vấn quản lý dự án và phân rã công việc (Work Breakdown Structure - WBS).
-Nhiệm vụ: "${t}"
-Mô tả: "${description || 'Chưa có mô tả'}"
-Đơn vị: "${unit || 'Đơn vị thực hiện'}"
+    const countPrompt =
+      mode === 'detailed'
+        ? '8 đến 12 việc con chi tiết'
+        : mode === 'phased'
+        ? '6 đến 8 việc con chia theo 3 giai đoạn: [Chuẩn bị], [Triển khai], [Nghiệm thu]'
+        : '5 đến 7 việc con hành động cụ thể';
 
-Hãy phân tích và chia nhỏ nhiệm vụ này thành 4-6 subtask (hạng mục công việc con) cụ thể, thực tế theo thứ tự logic thực hiện.
-Với mỗi subtask:
-- title: Tên công việc con ngắn gọn, rõ ràng (tiếng Việt).
-- completed: luôn để false.
-- resource: Gợi ý 1 tài nguyên/tài liệu liên quan trên mạng (tiêu đề, đường link URL thực tế có thể mở được như Google Docs, Wikipedia, các cổng tài liệu uy tín hoặc Google Search chuyên sâu, mô tả ngắn gọn).`;
+    const prompt = `Bạn là Chuyên gia Cao cấp về Phân rã Công việc (WBS).
+Hãy phân tích và nghiên cứu sâu tiêu đề nhiệm vụ: "${taskTitle}"
+Đơn vị: "${taskUnit}"
+Mô tả: "${taskDesc}"
+Mức độ: "${mode}" (${countPrompt})
+
+Mọi việc con phải bám sát 100% nội dung và từ khóa của "${taskTitle}", không dùng câu chung chung. Mỗi việc con kèm 1 tài nguyên tham khảo thực tế (tiêu đề, url Google search chuẩn, mô tả). Trả về JSON gồm "analysis" và "subtasks".`;
 
     const response = await callGeminiWithRetry(() =>
       ai.models.generateContent({
@@ -389,12 +584,14 @@ Với mỗi subtask:
           responseSchema: {
             type: Type.OBJECT,
             properties: {
+              analysis: { type: Type.STRING },
               subtasks: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
                     title: { type: Type.STRING },
+                    phase: { type: Type.STRING },
                     completed: { type: Type.BOOLEAN },
                     resource: {
                       type: Type.OBJECT,
@@ -410,56 +607,31 @@ Với mỗi subtask:
                 },
               },
             },
-            required: ['subtasks'],
+            required: ['analysis', 'subtasks'],
           },
         },
       })
     );
 
-    const parsed = JSON.parse(response.text || '{"subtasks": []}');
+    const parsed = JSON.parse(response.text || '{}');
+    if (!parsed.subtasks || !Array.isArray(parsed.subtasks) || parsed.subtasks.length === 0) {
+      const fallbackResult = generateSmartDomainSubtasks(taskTitle, taskUnit, mode);
+      return res.json({
+        analysis: fallbackResult.analysis,
+        subtasks: fallbackResult.subtasks,
+        fallback: true,
+      });
+    }
+
     return res.json(parsed);
   } catch (error: any) {
-    console.warn('[AI Service] Notice in generate-subtasks (network/ECONNRESET), serving domain fallback:', error?.message);
     const t = (req.body?.title || 'Nhiệm vụ trọng tâm').trim();
+    const u = (req.body?.unit || 'Đơn vị thực hiện').trim();
+    const mode = (req.body?.granularity || 'phased') as 'phased' | 'standard' | 'detailed' | 'deliverables';
+    const fallbackResult = generateSmartDomainSubtasks(t, u, mode);
     return res.json({
-      subtasks: [
-        {
-          title: `Lập kế hoạch chi tiết và phân công nhân sự cho "${t}"`,
-          completed: false,
-          resource: {
-            title: 'Mẫu kế hoạch triển khai công việc (Google Docs)',
-            url: 'https://docs.google.com/document/u/0/?ftv=1',
-            description: 'Tài liệu hướng dẫn mẫu kế hoạch hành động',
-          },
-        },
-        {
-          title: 'Thu thập dữ liệu, tài liệu quy chuẩn và liên hệ đơn vị phối hợp',
-          completed: false,
-          resource: {
-            title: 'Cổng thông tin điện tử & tài liệu tham chiếu',
-            url: 'https://www.google.com/search?q=' + encodeURIComponent(t),
-            description: 'Tra cứu thông tin và tài liệu thực thi liên quan',
-          },
-        },
-        {
-          title: 'Tiến hành triển khai các hạng mục nội dung trọng yếu',
-          completed: false,
-          resource: {
-            title: 'Bảng theo dõi tiến độ công việc',
-            url: 'https://docs.google.com/spreadsheets/u/0/',
-            description: 'Quản lý mốc thời gian và chỉ số hoàn thành',
-          },
-        },
-        {
-          title: 'Kiểm tra chất lượng (QA/QC), rà soát tiêu chí và báo cáo kết quả',
-          completed: false,
-          resource: {
-            title: 'Quy trình nghiệm thu công việc chuẩn',
-            url: 'https://vi.wikipedia.org/wiki/Qu%E1%BA%A3n_l%C3%BD_d%E1%BB%B1_%C3%A1n',
-            description: 'Tiêu chuẩn đánh giá và nghiệm thu nhiệm vụ',
-          },
-        },
-      ],
+      analysis: fallbackResult.analysis,
+      subtasks: fallbackResult.subtasks,
       fallback: true,
     });
   }
